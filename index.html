@@ -114,6 +114,64 @@
     .dark ::-webkit-scrollbar-thumb { background: #334155; }
     .scrollbar-none::-webkit-scrollbar { display: none; }
     .scrollbar-none { -ms-overflow-style: none; scrollbar-width: none; }
+
+    /* ── Add to Home Screen Button ── */
+    @keyframes a2hs-pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(13,148,136,0.45); }
+      50% { box-shadow: 0 0 0 10px rgba(13,148,136,0); }
+    }
+    #a2hs-btn { animation: a2hs-pulse 2.4s ease-in-out infinite; }
+    #a2hs-btn:active { transform: scale(0.97); }
+
+    /* ── iOS instruction modal ── */
+    #ios-modal {
+      position: fixed; inset: 0; z-index: 200;
+      background: rgba(0,0,0,0.55); backdrop-filter: blur(6px);
+      display: flex; align-items: flex-end; justify-content: center;
+      opacity: 0; pointer-events: none;
+      transition: opacity 0.3s ease;
+    }
+    #ios-modal.open { opacity: 1; pointer-events: all; }
+    #ios-modal-card {
+      width: 100%; max-width: 440px;
+      background: #fff; border-radius: 2rem 2rem 0 0;
+      padding: 2rem 1.5rem 2.5rem;
+      transform: translateY(100%);
+      transition: transform 0.4s cubic-bezier(0.16,1,0.3,1);
+    }
+    .dark #ios-modal-card { background: #0f172a; }
+    #ios-modal.open #ios-modal-card { transform: translateY(0); }
+    .ios-step {
+      display: flex; align-items: flex-start; gap: 14px;
+      padding: 12px 0; border-bottom: 1px solid rgba(0,0,0,0.06);
+    }
+    .dark .ios-step { border-color: rgba(255,255,255,0.06); }
+    .ios-step:last-child { border-bottom: none; }
+    .ios-step-num {
+      min-width: 28px; height: 28px; border-radius: 50%;
+      background: linear-gradient(135deg,#0d9488,#14b8a6);
+      color: #fff; font-size: 12px; font-weight: 800;
+      display: flex; align-items: center; justify-content: center; margin-top: 2px;
+    }
+    .ios-step-text { font-size: 14px; line-height: 1.5; color: #334155; }
+    .dark .ios-step-text { color: #cbd5e1; }
+    .ios-step-text b { color: #0d9488; font-weight: 700; }
+    .ios-share-icon {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 22px; height: 22px; margin: 0 3px; vertical-align: middle;
+      background: #007aff; border-radius: 6px; padding: 3px;
+    }
+    .ios-share-icon svg { width: 100%; height: 100%; fill: white; }
+    /* Arrow pointing to the real iOS share bar */
+    #ios-arrow {
+      position: absolute; bottom: 0; left: 50%; transform: translateX(-50%);
+      width: 0; height: 0;
+      border-left: 14px solid transparent;
+      border-right: 14px solid transparent;
+      border-top: 14px solid #fff;
+      display: none;
+    }
+    .dark #ios-arrow { border-top-color: #0f172a; }
   </style>
 </head>
 <body class="text-slate-800 dark:text-slate-100 min-h-screen relative font-sans overflow-x-hidden pb-10">
@@ -175,6 +233,17 @@
       <button onclick="saveProfile()" class="w-full bg-slate-900 dark:bg-brand-600 text-white font-semibold py-4 rounded-xl shadow-lg shadow-brand-500/10 hover:shadow-xl hover:-translate-y-0.5 transform active:scale-[0.98] transition-all">
         Enter Mind Vault
       </button>
+
+      <!-- ── Add to Home Screen button (shown only when not already installed) ── -->
+      <button id="a2hs-btn"
+        onclick="triggerA2HS()"
+        class="w-full mt-3 flex items-center justify-center gap-2.5 bg-gradient-to-r from-teal-500 to-cyan-500 text-white font-bold py-4 rounded-xl shadow-lg transition-all">
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3v12M8 11l4 4 4-4"/><rect x="3" y="16" width="18" height="5" rx="2"/>
+        </svg>
+        Add to Home Screen
+      </button>
+      <p id="a2hs-already" class="hidden text-xs text-brand-600 dark:text-brand-400 font-semibold mt-3 text-center">✓ Already installed on your home screen!</p>
     </div>
   </div>
 
@@ -612,54 +681,118 @@ lucide.createIcons();
 // Date stamp in header
 document.getElementById('current-date-display').textContent = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
 
-// ─── PWA & Add to Home Screen Setup (Dynamic Injection) ────────
+// ─── PWA & Add to Home Screen ────────────────────────────────────
+let _a2hsDeferredPrompt = null;
+
 (function initPWA() {
   try {
-    // A2HS Logic (manifest.json and sw.js are loaded as real files)
-    let deferredPrompt;
-    const pwaBanner = document.getElementById('pwa-banner');
-    const pwaBtn = document.getElementById('pwa-btn');
-    const pwaDesc = document.getElementById('pwa-desc');
+    const isStandalone =
+      window.matchMedia('(display-mode: standalone)').matches ||
+      window.navigator.standalone === true ||
+      document.referrer.includes('android-app://');
 
-    const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone || document.referrer.includes('android-app://');
     const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+    const isInChrome = /CriOS/.test(navigator.userAgent); // Chrome on iOS
 
-    if (isStandalone) return; 
+    const a2hsBtn    = document.getElementById('a2hs-btn');
+    const a2hsAlready = document.getElementById('a2hs-already');
+    const pwaBanner  = document.getElementById('pwa-banner');
+    const pwaBtn     = document.getElementById('pwa-btn');
 
-    // For Android/Chrome
-    window.addEventListener('beforeinstallprompt', (e) => {
-      e.preventDefault();
-      deferredPrompt = e;
-      pwaBanner.classList.remove('-translate-y-full');
-    });
-
-    // Fallback for iOS
-    if (isIOS && !isStandalone) {
-       setTimeout(() => {
-         pwaDesc.textContent = "Tap 'Share' below and select 'Add to Home Screen'";
-         pwaBtn.style.display = 'none';
-         pwaBanner.classList.remove('-translate-y-full');
-         setTimeout(() => pwaBanner.classList.add('-translate-y-full'), 12000); // Auto hide
-       }, 2000);
+    // ── Already installed: hide button, show confirmation ──
+    if (isStandalone) {
+      if (a2hsBtn)    a2hsBtn.style.display    = 'none';
+      if (a2hsAlready) a2hsAlready.classList.remove('hidden');
+      return;
     }
 
-    pwaBtn.addEventListener('click', async () => {
-      if (deferredPrompt) {
-        deferredPrompt.prompt();
-        const { outcome } = await deferredPrompt.userChoice;
-        if (outcome === 'accepted') {
-          pwaBanner.classList.add('-translate-y-full');
+    // ── Android / Chrome Desktop: capture native install prompt ──
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      _a2hsDeferredPrompt = e;
+      // Also show the top banner
+      if (pwaBanner) pwaBanner.classList.remove('-translate-y-full');
+    });
+
+    // Top-banner "Add App" button (Android)
+    if (pwaBtn) {
+      pwaBtn.addEventListener('click', async () => {
+        if (_a2hsDeferredPrompt) {
+          _a2hsDeferredPrompt.prompt();
+          const { outcome } = await _a2hsDeferredPrompt.userChoice;
+          if (outcome === 'accepted') pwaBanner.classList.add('-translate-y-full');
+          _a2hsDeferredPrompt = null;
         }
-        deferredPrompt = null;
-      }
-    });
+      });
+    }
 
+    // After install fires, hide everything
     window.addEventListener('appinstalled', () => {
-      pwaBanner.classList.add('-translate-y-full');
+      if (pwaBanner) pwaBanner.classList.add('-translate-y-full');
+      if (a2hsBtn)  a2hsBtn.style.display = 'none';
+      if (a2hsAlready) a2hsAlready.classList.remove('hidden');
+      _a2hsDeferredPrompt = null;
     });
 
-  } catch(e) {}
+    // iOS Safari: show button (it opens the modal guide)
+    // iOS Chrome: can't install at all, hide button
+    if (isIOS && isInChrome && a2hsBtn) {
+      // Chrome on iOS can't install PWAs — show a helpful note instead
+      a2hsBtn.textContent = '⚠️ Open in Safari to install';
+      a2hsBtn.style.background = 'linear-gradient(135deg,#f59e0b,#d97706)';
+      a2hsBtn.onclick = () => alert('Please open this page in Safari (not Chrome) to add it to your home screen.');
+    }
+    // For non-iOS, non-Android (e.g. desktop Firefox) the button stays visible;
+    // triggerA2HS() handles the no-prompt case gracefully.
+
+  } catch(e) { console.warn('PWA init error', e); }
 })();
+
+// ── Called by both the setup-screen button and top banner ──
+function triggerA2HS() {
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+
+  if (_a2hsDeferredPrompt) {
+    // Android / Chrome Desktop — native prompt available
+    _a2hsDeferredPrompt.prompt();
+    _a2hsDeferredPrompt.userChoice.then(({ outcome }) => {
+      if (outcome === 'accepted') {
+        const a2hsBtn = document.getElementById('a2hs-btn');
+        const a2hsAlready = document.getElementById('a2hs-already');
+        if (a2hsBtn)    a2hsBtn.style.display = 'none';
+        if (a2hsAlready) a2hsAlready.classList.remove('hidden');
+      }
+      _a2hsDeferredPrompt = null;
+    });
+  } else if (isIOS) {
+    // iPhone / iPad Safari — open the step-by-step modal
+    openIOSModal();
+  } else {
+    // Already installed or unsupported browser
+    const a2hsAlready = document.getElementById('a2hs-already');
+    const a2hsBtn     = document.getElementById('a2hs-btn');
+    const isStandalone = window.matchMedia('(display-mode: standalone)').matches;
+    if (isStandalone) {
+      if (a2hsBtn)    a2hsBtn.style.display = 'none';
+      if (a2hsAlready) a2hsAlready.classList.remove('hidden');
+    } else {
+      // Desktop browser where install wasn't triggered yet
+      alert('To install: click the install icon (⊕) in your browser address bar, or use the browser menu → "Install app".');
+    }
+  }
+}
+
+// ── iOS Modal helpers ──
+function openIOSModal() {
+  const m = document.getElementById('ios-modal');
+  if (m) m.classList.add('open');
+}
+function closeIOSModal(e) {
+  // Close on backdrop click or explicit call
+  const m = document.getElementById('ios-modal');
+  if (!m) return;
+  if (!e || e.target === m) m.classList.remove('open');
+}
 
 // ─── Real Verified Quotes ──────────────────────────────────
 const quotes = [
@@ -1864,5 +1997,51 @@ init();
   window.addEventListener('resize', () => { resize(); initStars(); });
 })();
 </script>
+
+<!-- ── iOS Add to Home Screen Guide Modal ── -->
+<div id="ios-modal" onclick="closeIOSModal(event)">
+  <div id="ios-modal-card">
+    <div style="width:40px;height:4px;background:rgba(0,0,0,0.15);border-radius:99px;margin:0 auto 20px;"></div>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px;">
+      <img src="icons/apple-touch-icon.png" alt="Mind Vault" style="width:52px;height:52px;border-radius:14px;box-shadow:0 4px 12px rgba(0,0,0,0.15);">
+      <div>
+        <div style="font-size:16px;font-weight:800;color:#0f172a;" class="dark:text-white">Add to Home Screen</div>
+        <div style="font-size:12px;color:#64748b;margin-top:2px;">Follow these 3 simple steps in Safari</div>
+      </div>
+    </div>
+
+    <div class="ios-step">
+      <div class="ios-step-num">1</div>
+      <div class="ios-step-text">
+        Tap the <b>Share</b> button
+        <span class="ios-share-icon">
+          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 2L12 15M12 2L8 6M12 2L16 6M4 13v7h16v-7" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+          </svg>
+        </span>
+        at the <b>bottom</b> of your Safari browser
+      </div>
+    </div>
+
+    <div class="ios-step">
+      <div class="ios-step-num">2</div>
+      <div class="ios-step-text">Scroll down the Share menu and tap <b>"Add to Home Screen"</b></div>
+    </div>
+
+    <div class="ios-step">
+      <div class="ios-step-num">3</div>
+      <div class="ios-step-text">Tap <b>"Add"</b> in the top right corner — done! 🎉</div>
+    </div>
+
+    <button onclick="closeIOSModal()"
+      style="width:100%;margin-top:20px;padding:14px;border-radius:14px;background:linear-gradient(135deg,#0d9488,#14b8a6);color:#fff;font-weight:800;font-size:14px;border:none;cursor:pointer;">
+      Got it!
+    </button>
+    <p style="text-align:center;font-size:10px;color:#94a3b8;margin-top:10px;">
+      ⚠️ Must be opened in <b>Safari</b> for this to work on iPhone/iPad
+    </p>
+  </div>
+</div>
+
 </body>
 </html>
